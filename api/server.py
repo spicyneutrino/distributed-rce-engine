@@ -1,3 +1,4 @@
+import io
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from sqlalchemy.orm import Session
 from minio import Minio
@@ -55,11 +56,13 @@ async def submit_job(file: UploadFile = File(...), db: Session = Depends(get_db)
     job_id = str(uuid.uuid4())
     
     try:
+        content = await file.read() 
+        
         minio_client.put_object(
             BUCKET_NAME,
             job_id,
-            file.file,
-            length = 1,
+            io.BytesIO(content),
+            length = len(content),
             part_size = 10*1024*1024
         )
         

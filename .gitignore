@@ -1,0 +1,34 @@
+# --- Python & Bytecode ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# --- Virtual Environments (uv) ---
+# This is where your packages live. Never commit this.
+.venv/
+venv/
+env/
+
+# --- Secrets & Configuration ---
+# Contains your DB passwords and keys.
+.env
+.env.local
+
+# --- IDEs & Editors ---
+# VS Code
+.vscode/
+# JetBrains (PyCharm)
+.idea/
+
+# --- OS Generated Files ---
+.DS_Store
+Thumbs.db
+
+# --- Testing & Coverage---
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- MyPy (Type Checking) ---
+.mypy_cache/

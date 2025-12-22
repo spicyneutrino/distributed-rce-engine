@@ -19,7 +19,8 @@ def run_code_in_container(code_content: bytes) -> str:
             "--memory", "128m",  # Limit RAM to prevent crashes
             "--cpus", "0.5",     # Limit CPU
             "-v", f"{tmp_path}:/app/script.py:ro,Z",
-            "docker.io/library/python:3.9-slim",
+            # "docker.io/library/python:3.9-slim",
+            "localhost/rce-datascience",
             "python", "/app/script.py"
         ]
         

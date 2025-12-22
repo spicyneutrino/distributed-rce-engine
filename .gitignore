@@ -5,7 +5,6 @@ __pycache__/
 *.pyd
 
 # --- Virtual Environments (uv) ---
-# This is where your packages live. Never commit this.
 .venv/
 venv/
 env/

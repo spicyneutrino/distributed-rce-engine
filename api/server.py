@@ -1,5 +1,7 @@
 import io
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from minio import Minio
 import pika
@@ -17,6 +19,8 @@ load_dotenv()
 Base.metadata.create_all(engine)
 
 app = FastAPI()
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
 minio_client = Minio(
     os.getenv("MINIO_ENDPOINT"),
@@ -49,6 +53,12 @@ def publish_message(job_id: str):
     connection.close()
     
 # Endpoints
+
+@app.get("/", response_class=HTMLResponse)
+async def read_root():
+    with open("static/index.html") as f:
+        return f.read()
+    
 
 @app.post("/submit")
 async def submit_job(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -93,3 +103,9 @@ def get_status(job_id: str, db: Session=Depends(get_db)):
         "submitted_at": job.created_at,
         "logs": job.logs
     }
+    
+# @app.get("/", reponse_class=HTMLResponse)
+# async def read_root():
+#     with open("static/index.html") as f:
+#         return f.read()
+    

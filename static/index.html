@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RCE Engine</title>
+    <style>
+        body { font-family: sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; background: #f4f4f9; }
+        textarea { width: 100%; height: 200px; font-family: monospace; padding: 10px; border: 1px solid #ccc; border-radius: 4px; }
+        button { background: #007bff; color: white; border: none; padding: 10px 20px; cursor: pointer; font-size: 1rem; border-radius: 4px; margin-top: 10px; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; }
+        #output { background: #2d2d2d; color: #f8f8f2; padding: 15px; border-radius: 4px; margin-top: 20px; white-space: pre-wrap; font-family: monospace; min-height: 100px; }
+        .status { font-weight: bold; margin-bottom: 5px; display: block; }
+    </style>
+</head>
+<body>
+    <h1> Remote Code Execution Engine</h1>
+    <p> Write Python code below and run in securely in a container.</p>
+
+    <textarea id="code">
+import sys
+import time
+
+print("Hello from the RCE Engine!")
+print(f"Running on: {sys.version}")
+print("Thinking...", end="", flush=True)
+time.sleep(1)
+print(" Done!")
+    </textarea>
+
+    <button onclick="submitJob()" id="runBtn"> Run Code </button> 
+
+    <div id="result-area" style = "display: none;">
+        <h3>Result</h3>
+        <span id="statusText" class="status">Status: Waiting...</span>
+        <div id="output"></div>
+    </div>
+
+    <script>
+        async function submitJob() {
+            const code = document.getElementById('code').value;
+            const runBtn = document.getElementById('runBtn');
+            const outputDiv = document.getElementById('output');
+            const statusText = document.getElementById('statusText');
+            const resultArea = document.getElementById('result-area');
+
+            // Reset UI
+            runBtn.disabled = true;
+            outputDiv.textContent = 'Submitting...';
+            resultArea.style.display = 'block';
+            statusText.textContent = 'Status: SUBMITTING...';
+
+            // Create file object from string
+            const file = new File([code], 'script.py', { type: 'text/x-python' });
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                // Submit job
+                const res = await fetch('/submit', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await res.json();
+
+                if (!res.ok) {
+                    throw new Error(data.detail || "Upload failed");
+                }
+
+                // FIX 1: Use snake_case to match Python API
+                const jobId = data.job_id; 
+
+                statusText.textContent = 'Status: QUEUED';
+                outputDiv.textContent = 'Waiting for worker...';
+
+                pollStatus(jobId);
+            } catch (error) {
+                statusText.textContent = "Status: ERROR";
+                outputDiv.textContent = "Error: " + error.message;
+                runBtn.disabled = false;
+            }
+        }
+
+        async function pollStatus(jobId) {
+            const runBtn = document.getElementById('runBtn');
+            const outputDiv = document.getElementById('output');
+            const statusText = document.getElementById('statusText');
+
+            const interval = setInterval(async () => {
+                try {
+                    const res = await fetch(`/status/${jobId}`);
+                    const data = await res.json();
+
+                    statusText.textContent = "Status: " + data.status;
+
+                    // FIX 2: Check for UPPERCASE status to match Python Worker
+                    if (data.status === 'COMPLETED' || data.status === 'FAILED') {
+                        clearInterval(interval);
+                        outputDiv.textContent = data.logs;
+                        runBtn.disabled = false;
+                    }
+                } catch (error) {
+                    clearInterval(interval);
+                    outputDiv.textContent = "Error polling status: " + error.message;
+                    runBtn.disabled = false;
+                }
+            }, 1000);
+        }
+    </script>
+</body>
+</html>

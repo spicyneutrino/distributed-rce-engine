@@ -12,6 +12,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from api.models import Job
 from api.database import SessionLocal
 from worker.run_container import run_code_in_container
+from worker.security import scan_code
 
 load_dotenv()
 
@@ -49,10 +50,12 @@ def process_job(ch, method, properties, body):
         response.close()
         response.release_conn()
         
-        print("-----------------------------")
-        print(f"DEBUG: Downloaded Code for {job_id}: ")
-        print(code_content.decode('utf-8'))
-        print("-----------------------------")
+        # print(f"DEBUG: Downloaded Code for {job_id}: ")
+        # print(code_content.decode('utf-8'))
+        
+        print(f"DEBUG: Checking security for job {job_id}...")
+        scan_code(code_content)
+        print(f"    Security Scan: PASSED")
         
         
         print("  Running container...")
@@ -61,7 +64,12 @@ def process_job(ch, method, properties, body):
         job.logs = logs
         job.status = "COMPLETED"
         print(f"    Finished. Result: {logs}...")
-        
+    
+    except ValueError as sec_err:
+        print(f"    Security/Syntax Violation: {sec_err}")
+        job.status = "FAILED"
+        job.logs = str(sec_err)
+    
     except Exception as e:
         print(f"    Failed: {e}")
         job.status = "FAILED"

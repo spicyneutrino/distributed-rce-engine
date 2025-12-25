@@ -17,6 +17,7 @@ from worker.security import scan_code
 load_dotenv()
 
 # Setup Connections
+BUCKET_NAME = "code-uploads"
 
 minio_client = Minio(
     os.getenv("MINIO_ENDPOINT"),
@@ -25,7 +26,21 @@ minio_client = Minio(
     secure= os.getenv("MINIO_SECURE") == "True"
 )
 
-BUCKET_NAME = "code-uploads"
+def  publish_event(ch, job_id, status, logs):
+    message = json.dumps({
+        "job_id": job_id,
+        "status": status,
+        "logs": logs
+    })
+    
+    ch.exchange_declare(exchange="job_events", exchange_type="fanout")
+    
+    ch.basic_publish(
+        exchange="job_events",
+        routing_key='',
+        body=message
+    )
+    
 
 def process_job(ch, method, properties, body):
     data = json.loads(body)
@@ -63,17 +78,20 @@ def process_job(ch, method, properties, body):
         
         job.logs = logs
         job.status = "COMPLETED"
+        publish_event(ch,job_id, job.status, logs)
         print(f"    Finished. Result: {logs}...")
     
     except ValueError as sec_err:
         print(f"    Security/Syntax Violation: {sec_err}")
         job.status = "FAILED"
         job.logs = str(sec_err)
+        publish_event(ch,job_id, job.status, f"    Security/Syntax Violation: {str(sec_err)}")
     
     except Exception as e:
         print(f"    Failed: {e}")
         job.status = "FAILED"
         job.logs = str(e)
+        publish_event(ch, job_id, job.status, f"System Error: {str(e)}")
         
     finally:
         db.commit()

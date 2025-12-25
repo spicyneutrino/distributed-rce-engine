@@ -69,13 +69,12 @@ print(" Done!")
                     throw new Error(data.detail || "Upload failed");
                 }
 
-                // FIX 1: Use snake_case to match Python API
                 const jobId = data.job_id; 
 
                 statusText.textContent = 'Status: QUEUED';
                 outputDiv.textContent = 'Waiting for worker...';
 
-                pollStatus(jobId);
+                connectWebSocket(jobId);
             } catch (error) {
                 statusText.textContent = "Status: ERROR";
                 outputDiv.textContent = "Error: " + error.message;
@@ -83,31 +82,32 @@ print(" Done!")
             }
         }
 
-        async function pollStatus(jobId) {
-            const runBtn = document.getElementById('runBtn');
-            const outputDiv = document.getElementById('output');
-            const statusText = document.getElementById('statusText');
+        function connectWebSocket(jobId) {
+            const outputDiv = document.getElementById("output")
+            const statusText = document.getElementById("statusText");
+            const runBtn = document.getElementById("runBtn");
 
-            const interval = setInterval(async () => {
-                try {
-                    const res = await fetch(`/status/${jobId}`);
-                    const data = await res.json();
+            // WS URL
+            const protocol = window.location.protocol === 'https:' ? 'wss': 'ws'
+            const ws = new WebSocket(`${protocol}://${window.location.host}/ws/${jobId}`);
 
-                    statusText.textContent = "Status: " + data.status;
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
 
-                    // FIX 2: Check for UPPERCASE status to match Python Worker
-                    if (data.status === 'COMPLETED' || data.status === 'FAILED') {
-                        clearInterval(interval);
-                        outputDiv.textContent = data.logs;
-                        runBtn.disabled = false;
-                    }
-                } catch (error) {
-                    clearInterval(interval);
-                    outputDiv.textContent = "Error polling status: " + error.message;
+                statusText.textContent = "Status: " + data.status;
+
+                if (data.status === 'COMPLETED' || data.status === 'FAILED'){
+                    outputDiv.textContent = data.logs;
                     runBtn.disabled = false;
+                    ws.close();
                 }
-            }, 1000);
-        }
+            }
+
+            ws.onerror = (err) => {
+            console.error("WS Error", err);
+            outputDiv.textContent += "\n[Connection Lost]"
+        };
+        };
     </script>
 </body>
 </html>

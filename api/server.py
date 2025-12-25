@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 from minio import Minio
 from dotenv import load_dotenv
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Import our local modules
 from .database import engine, get_db, Base
@@ -21,6 +22,8 @@ load_dotenv()
 Base.metadata.create_all(engine)
 
 app = FastAPI()
+
+Instrumentator().instrument(app).expose(app)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 

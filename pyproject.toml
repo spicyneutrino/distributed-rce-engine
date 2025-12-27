@@ -1,0 +1,25 @@
+[project]
+name = "rce-engine"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aio-pika>=9.5.8",
+    "fastapi>=0.127.0",
+    "minio>=7.2.20",
+    "pika>=1.3.2",
+    "prometheus-fastapi-instrumentator>=7.1.0",
+    "psycopg2-binary>=2.9.11",
+    "python-dotenv>=1.2.1",
+    "python-multipart>=0.0.21",
+    "requests>=2.32.5",
+    "sqlalchemy>=2.0.45",
+    "uvicorn>=0.40.0",
+    "websockets>=15.0.1",
+]
+
+[dependency-groups]
+dev = [
+    "locust>=2.41.6",
+]

@@ -75,31 +75,32 @@ services:
       - prometheus
     volumes:
           - ./grafana_config:/etc/grafana/provisioning/datasources:Z
-  
-    # Worker
+
   worker:
-      build: 
-        context: .
-        dockerfile: Dockerfile
-      container_name: rce-worker
-      restart: on-failure:5
-      env_file:
-        - .env
-      environment:
-        RABBITMQ_HOST: rabbitmq
-        POSTGRES_HOST: db
-        MINIO_ENDPOINT: minio:9000
-      depends_on:
-        rabbitmq:
-          condition: service_healthy
-        db:
-          condition: service_healthy
-      volumes:
-        - .:/app:Z 
-        - /run/user/1000/podman/podman.sock:/run/podman/podman.sock:z
-      security_opt:
-        - label=disable
-      command: uv run worker/main.py
+    build: 
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: rce-worker
+    restart: on-failure
+    # "Super Privileges" for Seccomp/Isolation
+    privileged: true
+    network_mode: "host"
+    security_opt:
+      - "label=disable"
+    # Environment Variables
+    env_file:
+      - .env
+    environment:
+      # This tells the worker to use the socket we mount below
+      - CONTAINER_HOST=unix:///run/podman/podman.sock
+    # Volume Mounts
+    volumes:
+      - .:/app                   # Mount code
+      - /app/.venv               # Anonymous volume (Prevents host/container conflict)
+      # Mount the host's Podman Socket (Using generic user path)
+      - /run/user/1000/podman/podman.sock:/run/podman/podman.sock
+    # Ensure dependencies are synced before running
+    entrypoint: ["/bin/sh", "-c", "uv sync && uv run worker/main.py"]
 volumes:
   rabbitmq_data:
   minio_data:

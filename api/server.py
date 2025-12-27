@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from minio import Minio
 from dotenv import load_dotenv
 from prometheus_fastapi_instrumentator import Instrumentator
+import functools
+from concurrent.futures import ThreadPoolExecutor
 
 # Import our local modules
 from .database import engine, get_db, Base
@@ -26,6 +28,9 @@ app = FastAPI()
 Instrumentator().instrument(app).expose(app)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+rabbitmq_connection = None
+rabbitmq_channel = None
 
 # Connection Manager
 class ConnectionManager:
@@ -73,6 +78,21 @@ async def consume_events():
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(consume_events())
+    global rabbitmq_channel, rabbitmq_connection
+    try:
+        connection_str = f"amqp://{os.getenv('RABBITMQ_USER')}:{os.getenv('RABBITMQ_PASS')}@{os.getenv('RABBITMQ_HOST')}/"
+        rabbitmq_connection = await aio_pika.connect_robust(connection_str)
+        rabbitmq_channel = await rabbitmq_connection.channel()
+        
+        await rabbitmq_channel.declare_queue("job_queue", durable = True)
+        print("Connected to RabbitMQ for publishing.")
+    except Exception as e:
+        print(f"Failed to connect to RabbitMQ: {e}")
+        
+@app.on_event("shutdown")
+async def shutdown_event():
+    if rabbitmq_connection:
+        await rabbitmq_connection.close()
     
 @app.websocket("/ws/{job_id}")
 async def websocket_endpoint(websocket: WebSocket, job_id: str):
@@ -90,31 +110,33 @@ minio_client = Minio(
     secret_key=os.getenv("MINIO_SECRET_KEY"),
     secure=os.getenv("MINIO_SECURE") == "True"
 )
+# Create a pool with 100 threads specifically for MinIO uploads
+minio_executor = ThreadPoolExecutor(max_workers=100)
 
 BUCKET_NAME = "code-uploads"
 
 if not minio_client.bucket_exists(BUCKET_NAME):
     minio_client.make_bucket(BUCKET_NAME)
 
-# Messages
+# # Messages
 
-def publish_message(job_id: str):
-    credentials = pika.PlainCredentials(os.getenv("RABBITMQ_USER"), os.getenv("RABBITMQ_PASS"))
-    parameters = pika.ConnectionParameters(host = os.getenv("RABBITMQ_HOST"), credentials=credentials)
-    connection = pika.BlockingConnection(parameters)
-    channel = connection.channel()
+# def publish_message(job_id: str):
+#     credentials = pika.PlainCredentials(os.getenv("RABBITMQ_USER"), os.getenv("RABBITMQ_PASS"))
+#     parameters = pika.ConnectionParameters(host = os.getenv("RABBITMQ_HOST"), credentials=credentials)
+#     connection = pika.BlockingConnection(parameters)
+#     channel = connection.channel()
     
-    channel.queue_declare(queue='job_queue', durable=True)
+#     channel.queue_declare(queue='job_queue', durable=True)
     
-    channel.basic_publish(
-        exchange='',
-        routing_key="job_queue",
-        body= json.dumps({"job_id": job_id}),
-        properties= pika.BasicProperties(
-            delivery_mode=2
-        )
-    )
-    connection.close()
+#     channel.basic_publish(
+#         exchange='',
+#         routing_key="job_queue",
+#         body= json.dumps({"job_id": job_id}),
+#         properties= pika.BasicProperties(
+#             delivery_mode=2
+#         )
+#     )
+#     connection.close()
     
 # Endpoints
 
@@ -132,14 +154,28 @@ async def submit_job(file: UploadFile = File(...), db: Session = Depends(get_db)
     try:
         content = await file.read() 
         
-        minio_client.put_object(
+        # minio_client.put_object(
+        #     BUCKET_NAME,
+        #     job_id,
+        #     io.BytesIO(content),
+        #     length = len(content),
+        #     part_size = 10*1024*1024
+        # )
+        
+        # Get the running event loop
+        loop = asyncio.get_running_loop()
+        
+        # Create a partial function to pass arguments to the blocking call
+        upload_func = functools.partial(
+            minio_client.put_object,
             BUCKET_NAME,
             job_id,
             io.BytesIO(content),
-            length = len(content),
-            part_size = 10*1024*1024
+            length=len(content),
+            part_size=10*1024*1024
         )
-        
+        # Run it in a separate thread so the main loop stays free
+        await loop.run_in_executor(minio_executor, upload_func)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"MinIO Upload Failed: {str(e)}")
     
@@ -147,10 +183,17 @@ async def submit_job(file: UploadFile = File(...), db: Session = Depends(get_db)
     new_job = Job(id=job_id, filename = file.filename, status = "QUEUED")
     db.add(new_job)
     db.commit()
-    db.refresh(new_job)
+    # db.refresh(new_job)
     
     try:
-        publish_message(job_id)
+        message_body = json.dumps({"job_id":job_id}).encode()
+        await rabbitmq_channel.default_exchange.publish(
+            aio_pika.Message(
+                body=message_body,
+                delivery_mode=aio_pika.DeliveryMode.PERSISTENT
+            ),
+            routing_key="job_queue"
+        )
     except Exception as e:
         print(f"CRITICAL: Failed to publish job{job_id} to RABBITMQ: {e}")
     

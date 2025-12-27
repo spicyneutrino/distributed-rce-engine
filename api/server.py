@@ -24,32 +24,6 @@ load_dotenv()
 
 Base.metadata.create_all(engine)
 
-import io
-import uuid
-import json
-import os
-import aio_pika
-import asyncio
-import functools
-from contextlib import asynccontextmanager  # <--- NEW IMPORT
-from concurrent.futures import ThreadPoolExecutor
-
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
-from sqlalchemy.orm import Session
-from minio import Minio
-from dotenv import load_dotenv
-from prometheus_fastapi_instrumentator import Instrumentator
-
-# Import our local modules
-from .database import engine, get_db, Base
-from .models import Job
-
-load_dotenv()
-
-Base.metadata.create_all(engine)
-
 # --- GLOBAL VARIABLES ---
 rabbitmq_connection = None
 rabbitmq_channel = None
@@ -84,7 +58,7 @@ async def lifespan(app: FastAPI):
     if rabbitmq_connection:
         await rabbitmq_connection.close()
         
-    for task in background_tasks:
+    for task in list(background_tasks):
         task.cancel()
         try:
             await task
@@ -161,8 +135,11 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
     await manager.connect(websocket, job_id)
     try:
         while True:
-            await websocket.receive()
+            await websocket.receive_text()
     except WebSocketDisconnect:
+        manager.disconnect(job_id)
+    except Exception as e:
+        print(f"Error in WebSocket: {e}")
         manager.disconnect(job_id)
 
 @app.get("/", response_class=HTMLResponse)
@@ -178,15 +155,7 @@ async def submit_job(file: UploadFile = File(...), db: Session = Depends(get_db)
     
     try:
         content = await file.read() 
-        
-        # minio_client.put_object(
-        #     BUCKET_NAME,
-        #     job_id,
-        #     io.BytesIO(content),
-        #     length = len(content),
-        #     part_size = 10*1024*1024
-        # )
-        
+                
         # Get the running event loop
         loop = asyncio.get_running_loop()
         
@@ -235,9 +204,3 @@ def get_status(job_id: str, db: Session=Depends(get_db)):
         "submitted_at": job.created_at,
         "logs": job.logs
     }
-    
-# @app.get("/", reponse_class=HTMLResponse)
-# async def read_root():
-#     with open("static/index.html") as f:
-#         return f.read()
-    

@@ -1,10 +1,13 @@
 import io
-import pika
 import uuid
 import json
 import os
 import aio_pika
 import asyncio
+import functools
+from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
+
 from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
@@ -12,8 +15,32 @@ from sqlalchemy.orm import Session
 from minio import Minio
 from dotenv import load_dotenv
 from prometheus_fastapi_instrumentator import Instrumentator
+
+# Import local modules
+from .database import engine, get_db, Base
+from .models import Job
+
+load_dotenv()
+
+Base.metadata.create_all(engine)
+
+import io
+import uuid
+import json
+import os
+import aio_pika
+import asyncio
 import functools
+from contextlib import asynccontextmanager  # <--- NEW IMPORT
 from concurrent.futures import ThreadPoolExecutor
+
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
+from sqlalchemy.orm import Session
+from minio import Minio
+from dotenv import load_dotenv
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Import our local modules
 from .database import engine, get_db, Base
@@ -23,16 +50,54 @@ load_dotenv()
 
 Base.metadata.create_all(engine)
 
-app = FastAPI()
-
-Instrumentator().instrument(app).expose(app)
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
-
+# --- GLOBAL VARIABLES ---
 rabbitmq_connection = None
 rabbitmq_channel = None
+background_tasks = set()
 
-# Connection Manager
+# --- LIFESPAN MANAGER ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Starting up application...")
+    global rabbitmq_channel, rabbitmq_connection
+    
+    # Connect to RabbitMQ (Publisher)
+    try:
+        connection_str = f"amqp://{os.getenv('RABBITMQ_USER')}:{os.getenv('RABBITMQ_PASS')}@{os.getenv('RABBITMQ_HOST')}/"
+        rabbitmq_connection = await aio_pika.connect_robust(connection_str)
+        rabbitmq_channel = await rabbitmq_connection.channel()
+        await rabbitmq_channel.declare_queue("job_queue", durable=True)
+        print("Connected to RabbitMQ for publishing.")
+    except Exception as e:
+        print(f"Failed to connect to RabbitMQ: {e}")
+
+    # Start Background Consumer (Listener)
+    task = asyncio.create_task(consume_events())
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+    
+    yield
+    
+    print("Shutting down Application")
+    
+    # Close RabbitMQ
+    if rabbitmq_connection:
+        await rabbitmq_connection.close()
+        
+    for task in background_tasks:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+# --- APP INITIALIZATION ---
+app = FastAPI(lifespan=lifespan)
+
+Instrumentator().instrument(app).expose(app)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Websocket Manager
 class ConnectionManager:
     def __init__(self) -> None:
         self.active_connections: dict[str, WebSocket] = {}
@@ -48,7 +113,11 @@ class ConnectionManager:
     async def send_update(self, job_id: str, message: dict):
         if job_id in self.active_connections:
             websocket = self.active_connections[job_id]
-            await websocket.send_json(message)
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                print(f"Error sending message to {job_id}: {e}")
+                self.disconnect(job_id)
 
 manager = ConnectionManager()
 
@@ -56,14 +125,11 @@ manager = ConnectionManager()
 async def consume_events():    
     try:
         connection_str = f"amqp://{os.getenv('RABBITMQ_USER')}:{os.getenv('RABBITMQ_PASS')}@{os.getenv('RABBITMQ_HOST')}/"
-        
         connection = await aio_pika.connect_robust(connection_str)
         
         async with connection:
-            channel = await connection.channel()
-            
+            channel = await connection.channel()   
             exchange = await channel.declare_exchange('job_events', aio_pika.ExchangeType.FANOUT)
-            
             queue = await channel.declare_queue(exclusive=True)
             await queue.bind(exchange)
             
@@ -75,25 +141,21 @@ async def consume_events():
     except Exception as e:
         print(f"CRITICAL ERROR in Background Listener: {e}")
 
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(consume_events())
-    global rabbitmq_channel, rabbitmq_connection
-    try:
-        connection_str = f"amqp://{os.getenv('RABBITMQ_USER')}:{os.getenv('RABBITMQ_PASS')}@{os.getenv('RABBITMQ_HOST')}/"
-        rabbitmq_connection = await aio_pika.connect_robust(connection_str)
-        rabbitmq_channel = await rabbitmq_connection.channel()
-        
-        await rabbitmq_channel.declare_queue("job_queue", durable = True)
-        print("Connected to RabbitMQ for publishing.")
-    except Exception as e:
-        print(f"Failed to connect to RabbitMQ: {e}")
-        
-@app.on_event("shutdown")
-async def shutdown_event():
-    if rabbitmq_connection:
-        await rabbitmq_connection.close()
+# --- MINNIO SETUP ---
+minio_client = Minio(
+    os.getenv("MINIO_ENDPOINT"),
+    access_key=os.getenv("MINIO_ACCESS_KEY"),
+    secret_key=os.getenv("MINIO_SECRET_KEY"),
+    secure=os.getenv("MINIO_SECURE") == "True"
+)
+minio_executor = ThreadPoolExecutor(max_workers=100)
+BUCKET_NAME = "code-uploads"
+
+if not minio_client.bucket_exists(BUCKET_NAME):
+    minio_client.make_bucket(BUCKET_NAME)
     
+# --- ENDPOINTS ---
+
 @app.websocket("/ws/{job_id}")
 async def websocket_endpoint(websocket: WebSocket, job_id: str):
     await manager.connect(websocket, job_id)
@@ -102,43 +164,6 @@ async def websocket_endpoint(websocket: WebSocket, job_id: str):
             await websocket.receive()
     except WebSocketDisconnect:
         manager.disconnect(job_id)
-
-# Minio Bucket
-minio_client = Minio(
-    os.getenv("MINIO_ENDPOINT"),
-    access_key=os.getenv("MINIO_ACCESS_KEY"),
-    secret_key=os.getenv("MINIO_SECRET_KEY"),
-    secure=os.getenv("MINIO_SECURE") == "True"
-)
-# Create a pool with 100 threads specifically for MinIO uploads
-minio_executor = ThreadPoolExecutor(max_workers=100)
-
-BUCKET_NAME = "code-uploads"
-
-if not minio_client.bucket_exists(BUCKET_NAME):
-    minio_client.make_bucket(BUCKET_NAME)
-
-# # Messages
-
-# def publish_message(job_id: str):
-#     credentials = pika.PlainCredentials(os.getenv("RABBITMQ_USER"), os.getenv("RABBITMQ_PASS"))
-#     parameters = pika.ConnectionParameters(host = os.getenv("RABBITMQ_HOST"), credentials=credentials)
-#     connection = pika.BlockingConnection(parameters)
-#     channel = connection.channel()
-    
-#     channel.queue_declare(queue='job_queue', durable=True)
-    
-#     channel.basic_publish(
-#         exchange='',
-#         routing_key="job_queue",
-#         body= json.dumps({"job_id": job_id}),
-#         properties= pika.BasicProperties(
-#             delivery_mode=2
-#         )
-#     )
-#     connection.close()
-    
-# Endpoints
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root():

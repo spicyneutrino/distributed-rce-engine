@@ -12,11 +12,9 @@ ENV PATH="/root/.local/bin:$PATH"
 # Set work directory
 WORKDIR /app
 
-# Copy dependency files first (for caching)
-COPY pyproject.toml .
-
-# Install python dependencies via UV
-RUN uv pip install --system --no-cache -r pyproject.toml || true
+# Copy and install dependencies
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-cache
 
 # Copy the rest of the code
 COPY . .

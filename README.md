@@ -77,7 +77,7 @@ Initial load testing with **Locust** showed a hard cap at **109 RPS**. Telemetry
 
 This project uses `podman-compose` for orchestration.
 
-1. **Clone & Configure:**
+1. **Setup & Configure:**
 ```bash
 git clone https://github.com/spicyneutrino/distributed-rce-engine.git
 cd distributed-rce-engine
@@ -85,14 +85,21 @@ cp .env.example .env
 uv sync
 ```
 
+2. **Build the Sandbox Image:**
 
-2. **Launch System:**
+You must build the isolation image that acts as the runtime for untrusted code. The worker nodes rely on this image existing locally.
+```bash
+podman build -t rce-datascience ./images
+```
+
+
+3. **Launch System:**
 ```bash
 podman-compose up --build
 ```
 
 
-3. **Access:**
+4. **Access:**
 * **API Docs:** `http://localhost:8000/docs`
 * **Grafana Dashboards:** `http://localhost:3000` (Default: admin/admin)
 
